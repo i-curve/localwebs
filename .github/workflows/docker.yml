@@ -41,8 +41,12 @@ jobs:
           images: ${{ vars.DOCKERHUB_IMAGE || format('{0}/localwebs', secrets.DOCKERHUB_USERNAME) }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha
+            type=match,pattern=^v(.+)$,group=1
+      - name: Check image tags
+        if: steps.meta.outputs.tags == ''
+        run: |
+          echo "::error::No image tag generated. Run this workflow on the default branch or a v-prefixed Git tag."
+          exit 1
       - uses: docker/build-push-action@v6
         with:
           context: .
