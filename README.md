@@ -1,41 +1,72 @@
 # Localwebs
 
-[简体中文](README.zh-CN.md)
+[![Docker workflow](https://github.com/i-curve/localwebs/actions/workflows/docker.yml/badge.svg)](https://github.com/i-curve/localwebs/actions/workflows/docker.yml)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-icurve%2Flocalwebs-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/icurve/localwebs)
+[![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 
-Localwebs (Local Web Send) sends files, folders, and clipboard contents between browsers. No account is needed to send or receive. Both the transfer page and the admin page can be switched between English and Simplified Chinese.
+English | [简体中文](README.zh-CN.md)
 
-## Send files
+## Overview
 
-1. Open Localwebs on both devices. Enter the same **six-digit code**, including any leading zeroes.
-2. Click **Choose files** or **Choose folder**, then click the receiving device.
-3. On the other device, choose **Accept and download** to start the browser download. Nothing is sent before acceptance.
+Localwebs (Local Web Send) is a browser-based tool for sharing files and clipboard contents between devices without an account.
 
-Use a random code and share it only with your recipients. Keep both tabs open during transfer. Single files are sent as-is; folders and multiple files arrive as a ZIP. Empty directories are not included. The limit is **100 GB** per transfer, including any ZIP overhead.
+## Features
 
-To share your clipboard, paste text, a link, an image, or files into **Clipboard**, then click the receiving device. The receiver can accept and copy text (up to **1 MiB**) or download pasted images and files that the browser makes available.
+- Connect devices with a six-digit pairing code; transfers start only after the recipient accepts.
+- Send files, folders, and text, links, images, or files that the browser allows you to paste.
+- Single files are sent as-is; multiple files and folders are packaged as a ZIP, excluding empty directories. Each transfer is limited to **100 GB**, including ZIP overhead; clipboard text is limited to **1 MiB**.
+- Connect multiple instances to transfer between devices on different nodes.
+- Switch the transfer and admin pages between English and Simplified Chinese.
 
-## Run with Docker
+## Installation and usage
 
-From the project directory:
+### Docker
+
+Run the [Docker Hub image](https://hub.docker.com/r/icurve/localwebs) without cloning the repository:
 
 ```sh
-docker build -t localwebs .
+docker pull icurve/localwebs:latest
 export LOCALWEBS_USERNAME=admin
 # Set LOCALWEBS_PASSWORD in your environment to a strong private password first.
-docker run -d --name localwebs -p 8080:8080 \
+docker run -d --name localwebs --restart unless-stopped -p 8080:8080 \
   -e LOCALWEBS_USERNAME -e LOCALWEBS_PASSWORD \
-  -v localwebs-data:/data localwebs
+  -v localwebs-data:/data icurve/localwebs:latest
 ```
 
-Open `http://localhost:8080`, or use the host machine's address from another device. Sign in at `/admin` to manage the account and cluster. If no password was configured, admin login is disabled; file transfers still work. Keep the data volume to retain changes. Settings saved in `/admin` take precedence over environment variables, which take precedence over the built-in defaults. If editing `config.json` directly, use `username`, `password`, and the `clusterPeerUrls` list. Use HTTPS on untrusted networks.
+To change the host port, for example to `8081`, replace `-p 8080:8080` with `-p 8081:8080`. The `localwebs-data` volume retains admin settings; do not delete it during updates. Environment variables can be viewed through the Docker container configuration, so restrict access to the host.
 
-## Connect multiple installations
+Use `docker logs -f localwebs` to view logs. To update, run `docker pull icurve/localwebs:latest`, then `docker stop localwebs` and `docker rm localwebs`, and repeat the `docker run` command above. Make sure the administrator environment variables are still set before running it again; removing the container does not delete the named volume.
 
-1. Sign in at `/admin` on each installation and enable **Cluster**. It is off by default.
-2. Set the same strong shared key (24 or more characters, no spaces) on every node.
-3. Enter reachable peer addresses, one per line, and save. Only one side of each link needs the other's address. For example, enter both A and C's addresses on B; A and C do not need to configure each other.
-4. Once the nodes are linked, users can enter the same pairing code on any connected node. In the example, users on A and C can transfer through B.
+Alternatively, run `docker build -t localwebs .` from a cloned repository and replace the image name at the end of the `docker run` command with `localwebs`.
 
-## Publish to Docker Hub
+### Run from source
 
-Set the repository's `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` GitHub Actions secrets. The workflow publishes `<username>/localwebs` by default; set the `DOCKERHUB_IMAGE` repository variable to use another image name. A push to the default branch updates `latest`, and a `v*` tag publishes a versioned image. To use a published image, replace `localwebs` at the end of the `docker run` command with `<username>/localwebs:latest`.
+Go 1.24 or newer and Node.js 22 are required. After cloning the repository, run:
+
+```sh
+npm ci
+npm run build
+go run .
+```
+
+Open `http://localhost:8080` on the host, or use the host's address from another device. Enter the same six-digit code on both devices, including any leading zeroes, select the content, and click the receiving device. The recipient can then accept and download or copy it. Use a random code, share it only with recipients, and keep both pages open during transfer.
+
+## Configuration
+
+Visit `/admin` to manage the account and cluster. The default administrator username is `admin`; if no password is set, admin login is disabled but transfers still work. Set the credentials with `LOCALWEBS_USERNAME` and `LOCALWEBS_PASSWORD`. Docker uses a data volume to retain settings saved in the admin page; when running from source, settings are saved to `config.json` in the project directory by default.
+
+Settings saved in the admin page take precedence over environment variables, which take precedence over the built-in defaults. Set `LOCALWEBS_ADDR` to change the listening address, which defaults to `:8080`. Use HTTPS on untrusted networks.
+
+### Cluster
+
+Clustering is disabled by default. To connect multiple instances:
+
+1. Sign in at `/admin` on each instance and enable **Cluster**.
+2. Set the same strong shared key on every node: 24–256 printable ASCII characters without spaces.
+3. Enter reachable HTTP(S) peer addresses, one per line, and save. Only one side of each link needs the other's address. For example, enter both A and C's addresses on B; A and C do not need to configure each other.
+4. Once linked, users can enter the same pairing code on any connected node. In the example, users on A and C can transfer through B.
+
+## License
+
+This project is licensed under the [BSD 3-Clause License](LICENSE).
