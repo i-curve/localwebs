@@ -355,13 +355,17 @@ func TestAdminPersistsOverrides(t *testing.T) {
 		t.Fatal("missing protected session cookie")
 	}
 	request("PUT", "/settings", `{"clusterEnabled":true}`, cookies[0], 400)
-	updated := request("PUT", "/settings", `{"username":"owner","clusterPeerUrls":["https://one.example/","http://two.example","https://one.example"]}`, cookies[0], 200)
+	request("PUT", "/settings", `{"roomTtlMinutes":0}`, cookies[0], 400)
+	request("PUT", "/settings", `{"roomTtlMinutes":1441}`, cookies[0], 400)
+	request("PUT", "/settings", `{"roomTtlMinutes":1}`, cookies[0], 200)
+	request("PUT", "/settings", `{"roomTtlMinutes":1440}`, cookies[0], 200)
+	updated := request("PUT", "/settings", `{"username":"owner","roomTtlMinutes":25,"clusterPeerUrls":["https://one.example/","http://two.example","https://one.example"]}`, cookies[0], 200)
 	request("GET", "/settings", "", cookies[0], 401)
 	var settings map[string]any
 	if err := json.NewDecoder(updated.Body).Decode(&settings); err != nil {
 		t.Fatal(err)
 	}
-	if settings["username"] != "owner" || settings["clusterEnabled"] != false || settings["password"] != nil {
+	if settings["username"] != "owner" || settings["roomTtlMinutes"] != float64(25) || settings["clusterEnabled"] != false || settings["password"] != nil {
 		t.Fatalf("unexpected settings response: %v", settings)
 	}
 	data, err := os.ReadFile(path)
@@ -369,8 +373,38 @@ func TestAdminPersistsOverrides(t *testing.T) {
 		t.Fatalf("config did not persist only the override: %v", err)
 	}
 	reloaded, err := loadConfig(path, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
-	if err != nil || reloaded.get().Username != "owner" || reloaded.get().Password != env["LOCALWEBS_PASSWORD"] ||
+	if err != nil || reloaded.get().Username != "owner" || reloaded.get().Password != env["LOCALWEBS_PASSWORD"] || reloaded.get().RoomTTLMinutes != 25 ||
 		strings.Join(reloaded.get().ClusterPeerURLs, ",") != "https://one.example,http://two.example" {
 		t.Fatalf("config precedence not preserved on reload: %v", err)
+	}
+}
+
+func TestRoomDurationOnJoin(t *testing.T) {
+	store, _, server := testNode(t, filepath.Join(t.TempDir(), "config.json"), nil)
+	if store.get().RoomTTLMinutes != 10 {
+		t.Fatalf("default room duration is %d, want 10", store.get().RoomTTLMinutes)
+	}
+	join := func(code string) message {
+		t.Helper()
+		ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server, "http")+"/ws", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ws.Close() })
+		nextMessage(t, ws, func(m message) bool { return m.Type == "hello" })
+		if err := ws.WriteJSON(message{Type: "join", Code: code}); err != nil {
+			t.Fatal(err)
+		}
+		return nextMessage(t, ws, func(m message) bool { return m.Type == "joined" })
+	}
+	if got := join("001234").RoomTTLMinutes; got != 10 {
+		t.Fatalf("initial room duration is %d, want 10", got)
+	}
+	minutes := 35
+	if _, err := store.update(store.get(), configPatch{RoomTTLMinutes: &minutes}); err != nil {
+		t.Fatal(err)
+	}
+	if got := join("001235").RoomTTLMinutes; got != minutes {
+		t.Fatalf("new room duration is %d, want %d", got, minutes)
 	}
 }

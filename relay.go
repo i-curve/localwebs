@@ -124,6 +124,7 @@ type message struct {
 	Error string          `json:"error,omitempty"`
 	Hops  uint8           `json:"hops,omitempty"`
 	Token string          `json:"token,omitempty"`
+	RoomTTLMinutes int    `json:"roomTtlMinutes,omitempty"`
 }
 
 type hub struct {
@@ -148,7 +149,7 @@ func newHub() *hub {
 	}
 }
 
-func (h *hub) serve(w http.ResponseWriter, r *http.Request, allowJoin func() bool) {
+func (h *hub) serve(w http.ResponseWriter, r *http.Request, allowJoin func() bool, roomTTLMinutes func() int) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -192,7 +193,7 @@ func (h *hub) serve(w http.ResponseWriter, r *http.Request, allowJoin func() boo
 			case !codePattern.MatchString(m.Code):
 				c.json(message{Type: "join-error", Error: "Enter exactly six digits."})
 			case c.room == m.Code:
-				c.json(message{Type: "joined", Code: c.room})
+				c.json(message{Type: "joined", Code: c.room, RoomTTLMinutes: roomTTLMinutes()})
 				h.presence(c.room)
 			case len(h.rooms[m.Code]) >= maxRoom:
 				c.json(message{Type: "join-error", Error: "This room is full."})
@@ -203,7 +204,7 @@ func (h *hub) serve(w http.ResponseWriter, r *http.Request, allowJoin func() boo
 					h.rooms[c.room] = make(map[string]*client)
 				}
 				h.rooms[c.room][c.id] = c
-				c.json(message{Type: "joined", Code: c.room})
+				c.json(message{Type: "joined", Code: c.room, RoomTTLMinutes: roomTTLMinutes()})
 				h.refresh(c.room)
 			}
 		case "leave":

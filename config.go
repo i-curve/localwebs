@@ -22,6 +22,7 @@ var systemDefaults []byte
 type config struct {
 	Username        string   `json:"username"`
 	Password        string   `json:"password"`
+	RoomTTLMinutes  int      `json:"roomTtlMinutes"`
 	ClusterEnabled  bool     `json:"clusterEnabled"`
 	ClusterPeerURLs []string `json:"clusterPeerUrls"`
 	ClusterKey      string   `json:"clusterKey"`
@@ -30,6 +31,7 @@ type config struct {
 type configPatch struct {
 	Username        *string   `json:"username,omitempty"`
 	Password        *string   `json:"password,omitempty"`
+	RoomTTLMinutes  *int      `json:"roomTtlMinutes,omitempty"`
 	ClusterEnabled  *bool     `json:"clusterEnabled,omitempty"`
 	ClusterPeerURLs *[]string `json:"clusterPeerUrls,omitempty"`
 	ClusterKey      *string   `json:"clusterKey,omitempty"`
@@ -40,6 +42,7 @@ type configPatch struct {
 
 func (c config) equal(other config) bool {
 	return c.Username == other.Username && c.Password == other.Password &&
+		c.RoomTTLMinutes == other.RoomTTLMinutes &&
 		c.ClusterEnabled == other.ClusterEnabled && c.ClusterKey == other.ClusterKey &&
 		slices.Equal(c.ClusterPeerURLs, other.ClusterPeerURLs)
 }
@@ -50,6 +53,9 @@ func (p configPatch) apply(c config) config {
 	}
 	if p.Password != nil {
 		c.Password = *p.Password
+	}
+	if p.RoomTTLMinutes != nil {
+		c.RoomTTLMinutes = *p.RoomTTLMinutes
 	}
 	if p.ClusterEnabled != nil {
 		c.ClusterEnabled = *p.ClusterEnabled
@@ -69,6 +75,9 @@ func (p configPatch) merge(next configPatch) configPatch {
 	}
 	if next.Password != nil {
 		p.Password = next.Password
+	}
+	if next.RoomTTLMinutes != nil {
+		p.RoomTTLMinutes = next.RoomTTLMinutes
 	}
 	if next.ClusterEnabled != nil {
 		p.ClusterEnabled = next.ClusterEnabled
@@ -148,6 +157,9 @@ func normalizeURLs(urls []string) ([]string, error) {
 func validate(c config) error {
 	if strings.TrimSpace(c.Username) == "" || len(c.Username) > 128 || len(c.Password) > 1024 {
 		return errors.New("invalid administrator credentials")
+	}
+	if c.RoomTTLMinutes < 1 || c.RoomTTLMinutes > 1440 {
+		return errors.New("room duration must be between 1 and 1440 minutes")
 	}
 	if len(c.ClusterKey) > 256 || strings.IndexFunc(c.ClusterKey, func(r rune) bool { return r < '!' || r > '~' }) >= 0 ||
 		(c.ClusterEnabled && len(c.ClusterKey) < 24) {

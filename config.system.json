@@ -1,6 +1,7 @@
 {
   "username": "admin",
   "password": "",
+  "roomTtlMinutes": 10,
   "clusterEnabled": false,
   "clusterPeerUrls": [],
   "clusterKey": ""

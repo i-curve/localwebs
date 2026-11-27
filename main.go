@@ -179,7 +179,7 @@ func (a *admin) settings(c *gin.Context) {
 		peers = a.cluster.connected()
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"username": cfg.Username, "clusterEnabled": cfg.ClusterEnabled,
+		"username": cfg.Username, "roomTtlMinutes": cfg.RoomTTLMinutes, "clusterEnabled": cfg.ClusterEnabled,
 		"clusterPeerUrls": cfg.ClusterPeerURLs, "hasClusterKey": cfg.ClusterKey != "",
 		"clusterConnectedPeers": peers,
 	})
@@ -199,7 +199,7 @@ func router(h *hub, cl *cluster, webDir string) http.Handler {
 	r.GET("/healthz", func(c *gin.Context) { c.Status(http.StatusOK) })
 	r.GET("/ws", func(c *gin.Context) {
 		ip := c.RemoteIP()
-		h.serve(c.Writer, c.Request, func() bool { return joins.allow(ip) })
+		h.serve(c.Writer, c.Request, func() bool { return joins.allow(ip) }, func() int { return cl.store.get().RoomTTLMinutes })
 	})
 	r.GET("/ws/cluster", func(c *gin.Context) { cl.accept(c.Writer, c.Request) })
 	api := r.Group("/api/admin", func(c *gin.Context) { c.Header("Cache-Control", "no-store"); c.Next() })

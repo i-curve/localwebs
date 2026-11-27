@@ -5,6 +5,7 @@ import { tr } from './i18n';
 
 type Settings = {
   username: string;
+  roomTtlMinutes: number;
   clusterEnabled: boolean;
   clusterPeerUrls: string[];
   hasClusterKey: boolean;
@@ -24,6 +25,7 @@ const username = ref('');
 const password = ref('');
 const adminUsername = ref('');
 const adminPassword = ref('');
+const roomTtlMinutes = ref(10);
 const clusterEnabled = ref(false);
 const clusterPeerUrls = ref('');
 const clusterKey = ref('');
@@ -52,6 +54,7 @@ async function settings(method = 'GET', body?: object): Promise<Settings> {
 
 function useSettings(s: Settings) {
   adminUsername.value = s.username;
+  roomTtlMinutes.value = s.roomTtlMinutes;
   clusterEnabled.value = enabled.value = s.clusterEnabled;
   clusterPeerUrls.value = s.clusterPeerUrls.join('\n');
   hasClusterKey.value = s.hasClusterKey;
@@ -93,6 +96,7 @@ async function save() {
     useSettings(await settings('PUT', {
       username: adminUsername.value,
       password: adminPassword.value || undefined,
+      roomTtlMinutes: roomTtlMinutes.value,
       clusterEnabled: clusterEnabled.value,
       clusterPeerUrls: clusterPeerUrls.value.split(/\r?\n/).map(url => url.trim()).filter(Boolean),
       clusterKey: clusterKey.value || undefined
@@ -157,6 +161,14 @@ onUnmounted(() => window.clearInterval(polling));
       <label class="field">{{ tr('New password') }}
         <input v-model="adminPassword" type="password" minlength="12" maxlength="1024" autocomplete="new-password" :placeholder="tr('Leave blank to keep current password')">
       </label>
+
+      <div class="border-t border-slate-800 pt-5">
+        <h2 class="text-xl font-semibold">{{ tr('Room settings') }}</h2>
+      </div>
+      <label class="field">{{ tr('Room duration (minutes)') }}
+        <input v-model.number="roomTtlMinutes" type="number" min="1" max="1440" step="1" required>
+      </label>
+      <p class="muted">{{ tr('Changes apply to newly joined rooms only.') }}</p>
 
       <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-5">
         <h2 class="text-xl font-semibold">{{ tr('Cluster') }}</h2>

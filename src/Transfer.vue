@@ -7,7 +7,7 @@ import { tr } from './i18n';
 const CHUNK = 256 * 1024;
 const LIMIT = 100_000_000_000;
 const TEXT_LIMIT = 1024 * 1024;
-const ROOM_TTL = 10 * 60 * 1000;
+const MAX_ROOM_TTL_MINUTES = 1440;
 const ROOM_STORAGE_KEY = 'localwebs-room';
 const ID = /^[0-9a-f]{32}$/;
 const CODE = /^\d{6}$/;
@@ -39,6 +39,7 @@ const folderInput = ref<HTMLInputElement>();
 const offerDialog = ref<HTMLDialogElement>();
 const clipboard = ref('');
 const clipboardFiles = shallowRef<File[]>([]);
+const clipboardReading = ref(false);
 const selection = shallowRef<{ files: File[]; folder: boolean }>();
 const receivedText = ref('');
 const receivedFrom = ref('');
@@ -46,7 +47,7 @@ const copyMessage = ref('');
 const offer = ref<Offer>();
 const incoming = shallowRef<Incoming>();
 const outgoing = shallowRef<Outgoing>();
-const busy = computed(() => Boolean(offer.value || incoming.value || outgoing.value || receivedText.value));
+const busy = computed(() => Boolean(offer.value || incoming.value || outgoing.value || receivedText.value || clipboardReading.value));
 const textDialogOpen = computed(() => incoming.value?.content === 'text' || Boolean(receivedText.value));
 watch([offer, textDialogOpen], ([currentOffer, showText]) => {
   const dialog = offerDialog.value;
@@ -60,6 +61,7 @@ let offerTimer: number | undefined;
 let roomTimer: number | undefined;
 let expiresAt = 0;
 let pendingRoom = '';
+let selectionRevision = 0;
 let stopped = false;
 let waiter: { kind: string; finish: (error?: Error) => void } | undefined;
 
@@ -145,7 +147,7 @@ function restoreRoom() {
     if (!data || typeof data !== 'object' || !('code' in data) || !('expiresAt' in data) ||
         typeof data.code !== 'string' || !CODE.test(data.code) ||
         typeof data.expiresAt !== 'number' || !Number.isSafeInteger(data.expiresAt) ||
-        data.expiresAt > Date.now() + ROOM_TTL) {
+        data.expiresAt > Date.now() + MAX_ROOM_TTL_MINUTES * 60_000) {
       throw new Error('Invalid saved room session.');
     }
     if (data.expiresAt <= Date.now()) {
@@ -223,7 +225,13 @@ function connect() {
           transmit(JSON.stringify({ type: 'leave' }));
           break;
         }
-        if (!expiresAt) expiresAt = Date.now() + ROOM_TTL;
+        if (!expiresAt) {
+          if (!Number.isInteger(m.roomTtlMinutes) || m.roomTtlMinutes < 1 || m.roomTtlMinutes > MAX_ROOM_TTL_MINUTES) {
+            leaveRoom('Could not determine the room duration. Join again.');
+            break;
+          }
+          expiresAt = Date.now() + m.roomTtlMinutes * 60_000;
+        }
         room.value = m.code;
         changing.value = joining.value = false;
         saveRoom(m.code);
@@ -473,19 +481,76 @@ function selectFiles(event: Event, folder: boolean) {
 }
 
 function paste(event: ClipboardEvent) {
-  selection.value = undefined;
-  const files = Array.from(event.clipboardData?.files ?? []);
-  if (files.length) {
-    event.preventDefault();
-    clipboard.value = '';
+  if (busy.value) return;
+  clearSelection();
+  failure.value = '';
+  if (!event.clipboardData) {
+    failure.value = 'Could not read clipboard. Check browser permissions or paste again.';
+    return;
   }
-  clipboardFiles.value = files;
+  chooseClipboard(event.clipboardData.getData('text/plain'), Array.from(event.clipboardData.files));
 }
 
 function clearSelection() {
+  selectionRevision++;
+  clipboardReading.value = false;
   selection.value = undefined;
   clipboard.value = '';
   clipboardFiles.value = [];
+}
+
+function chooseClipboard(text: string, files: File[]) {
+  if (files.length) {
+    clipboardFiles.value = files;
+  } else if (!text) {
+    failure.value = 'Clipboard is empty or contains unsupported content.';
+  } else if (encoder.encode(text).length > TEXT_LIMIT) {
+    failure.value = 'Clipboard text must be 1 MiB or less.';
+  } else {
+    clipboard.value = text;
+  }
+}
+
+async function readClipboard() {
+  if (busy.value) return;
+  clearSelection();
+  failure.value = '';
+  const revision = selectionRevision;
+  if (!navigator.clipboard || (!navigator.clipboard.read && !navigator.clipboard.readText)) {
+    failure.value = 'Clipboard access requires HTTPS or localhost and browser permission. You can also paste on the button.';
+    return;
+  }
+  clipboardReading.value = true;
+  try {
+    let text = '';
+    const files: File[] = [];
+    if (navigator.clipboard.read) {
+      const items = await navigator.clipboard.read();
+      const extensions: Record<string, string> = {
+        'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg'
+      };
+      for (const item of items) {
+        const type = item.types.find(value => value.startsWith('image/'));
+        if (type) {
+          const blob = await item.getType(type);
+          files.push(new File([blob], `clipboard-${files.length + 1}.${extensions[type] ?? 'bin'}`, { type }));
+        } else if (item.types.includes('text/plain')) {
+          const part = await (await item.getType('text/plain')).text();
+          text += (text ? '\n' : '') + part;
+        }
+      }
+    } else {
+      text = await navigator.clipboard.readText();
+    }
+    if (revision === selectionRevision && ready.value && room.value) chooseClipboard(text, files);
+  } catch (error) {
+    if (revision === selectionRevision) {
+      console.warn('Could not read clipboard.', error);
+      failure.value = 'Could not read clipboard. Check browser permissions or paste again.';
+    }
+  } finally {
+    if (revision === selectionRevision) clipboardReading.value = false;
+  }
 }
 
 function sendTo(peer: string) {
@@ -563,7 +628,7 @@ onUnmounted(() => {
           <h2 class="text-lg font-semibold">{{ tr('Your pairing room') }}</h2>
           <p v-if="room" class="mt-1 font-mono text-2xl tracking-widest text-cyan-300">{{ room }}</p>
           <p v-else class="muted mt-1">{{ tr('Not paired yet') }}</p>
-          <p v-if="room" class="muted mt-1">{{ tr('Room sessions expire 10 minutes after joining.') }}</p>
+          <p v-if="room" class="muted mt-1">{{ tr('Room sessions expire automatically.') }}</p>
         </div>
         <div v-if="room" class="flex flex-wrap gap-2">
           <button class="secondary" @click="changeRoom">{{ tr('Change code') }}</button>
@@ -580,14 +645,17 @@ onUnmounted(() => {
           <input ref="folderInput" type="file" webkitdirectory multiple hidden @change="selectFiles($event, true)">
         </div>
         <p class="muted">{{ tr('Up to 100 GB per transfer. Folders and multiple files arrive as a ZIP.') }}</p>
-        <label class="field">
-          {{ tr('Clipboard') }}
-          <textarea v-model="clipboard" rows="3" :disabled="busy" :placeholder="tr('Paste text, a link, an image, or files here')"
-            @paste="paste" @input="clipboardFiles = []; selection = undefined" />
-        </label>
+        <div class="grid gap-2">
+          <span class="text-sm">{{ tr('Clipboard') }}</span>
+          <button class="secondary justify-self-start" :disabled="busy" @click="readClipboard" @paste.prevent="paste">
+            {{ tr(clipboardReading ? 'Reading clipboard…' : 'Read clipboard') }}
+          </button>
+          <p class="muted">{{ tr('Click to read the clipboard, or focus the button and paste.') }}</p>
+          <p v-if="clipboard || clipboardFiles.length" class="muted" role="status">{{ tr('Clipboard content is ready to send.') }}</p>
+        </div>
         <p v-if="selection?.folder" class="muted break-all">{{ selection.files[0].webkitRelativePath.split('/')[0] }}</p>
-        <ul v-else-if="selection || clipboardFiles.length" class="muted max-h-36 list-inside list-disc overflow-auto break-all">
-          <li v-for="(file, index) in (selection?.files ?? clipboardFiles)" :key="index">{{ file.name }}</li>
+        <ul v-else-if="selection" class="muted max-h-36 list-inside list-disc overflow-auto break-all">
+          <li v-for="(file, index) in selection.files" :key="index">{{ file.name }}</li>
         </ul>
         <button v-if="selection || clipboard || clipboardFiles.length" class="secondary justify-self-start"
           :disabled="busy" @click="clearSelection">{{ tr('Clear selection') }}</button>
@@ -655,7 +723,7 @@ onUnmounted(() => {
           <LanguagePicker />
         </div>
         <p class="muted mt-2">{{ tr('Enter the same six-digit code on every device you want to connect.') }}</p>
-        <p class="muted mt-2">{{ tr('Room sessions expire 10 minutes after joining.') }}</p>
+        <p class="muted mt-2">{{ tr('Room sessions expire automatically.') }}</p>
         <label class="field mt-5">
           {{ tr('Pairing code') }}
           <input v-model="input" type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="000000"
