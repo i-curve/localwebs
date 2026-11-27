@@ -7,6 +7,8 @@ import { tr } from './i18n';
 const CHUNK = 256 * 1024;
 const LIMIT = 100_000_000_000;
 const TEXT_LIMIT = 1024 * 1024;
+const ROOM_TTL = 10 * 60 * 1000;
+const ROOM_STORAGE_KEY = 'localwebs-room';
 const ID = /^[0-9a-f]{32}$/;
 const CODE = /^\d{6}$/;
 const encoder = new TextEncoder();
@@ -24,6 +26,7 @@ const ready = ref(false);
 const room = ref('');
 const input = ref('');
 const roomError = ref('');
+const storageError = ref('');
 const changing = ref(true);
 const joining = ref(false);
 const peers = ref<string[]>([]);
@@ -54,6 +57,9 @@ watch([offer, textDialogOpen], ([currentOffer, showText]) => {
 let ws: WebSocket | undefined;
 let reconnect: number | undefined;
 let offerTimer: number | undefined;
+let roomTimer: number | undefined;
+let expiresAt = 0;
+let pendingRoom = '';
 let stopped = false;
 let waiter: { kind: string; finish: (error?: Error) => void } | undefined;
 
@@ -115,6 +121,85 @@ function clearRoom(reason: string) {
   clearSelection();
 }
 
+function forgetRoom() {
+  try {
+    sessionStorage.removeItem(ROOM_STORAGE_KEY);
+  } catch (error) {
+    console.warn('Room session storage is unavailable.', error);
+    storageError.value = 'Room session storage is unavailable. Refreshing may not behave as expected.';
+  }
+}
+
+function restoreRoom() {
+  let saved: string | null;
+  try {
+    saved = sessionStorage.getItem(ROOM_STORAGE_KEY);
+  } catch (error) {
+    console.warn('Room session storage is unavailable.', error);
+    storageError.value = 'Room session storage is unavailable. Refreshing may not behave as expected.';
+    return;
+  }
+  if (!saved) return;
+  try {
+    const data: unknown = JSON.parse(saved);
+    if (!data || typeof data !== 'object' || !('code' in data) || !('expiresAt' in data) ||
+        typeof data.code !== 'string' || !CODE.test(data.code) ||
+        typeof data.expiresAt !== 'number' || !Number.isSafeInteger(data.expiresAt) ||
+        data.expiresAt > Date.now() + ROOM_TTL) {
+      throw new Error('Invalid saved room session.');
+    }
+    if (data.expiresAt <= Date.now()) {
+      forgetRoom();
+      roomError.value = 'Room session expired. Join again.';
+      return;
+    }
+    pendingRoom = data.code;
+    expiresAt = data.expiresAt;
+    scheduleRoomExpiry();
+  } catch (error) {
+    console.warn('Could not restore room session.', error);
+    forgetRoom();
+    roomError.value = 'Could not restore the saved room. Join again.';
+  }
+}
+
+function saveRoom(code: string) {
+  try {
+    sessionStorage.setItem(ROOM_STORAGE_KEY, JSON.stringify({ code, expiresAt }));
+    storageError.value = '';
+  } catch (error) {
+    console.warn('Room session storage is unavailable.', error);
+    storageError.value = 'Room session storage is unavailable. Refreshing may not behave as expected.';
+  }
+}
+
+function scheduleRoomExpiry() {
+  window.clearTimeout(roomTimer);
+  if (expiresAt) roomTimer = window.setTimeout(expireRoom, Math.max(0, expiresAt - Date.now()));
+}
+
+function expireRoom() {
+  if (!expiresAt) return;
+  if (Date.now() < expiresAt) { scheduleRoomExpiry(); return; }
+  leaveRoom('Room session expired. Join again.');
+}
+
+function leaveRoom(reason = '') {
+  if (ws?.readyState === WebSocket.OPEN && (room.value || pendingRoom)) {
+    transmit(JSON.stringify({ type: 'leave' }));
+  }
+  clearRoom(reason || 'Room left.');
+  clearTimeout(roomTimer);
+  expiresAt = 0;
+  pendingRoom = '';
+  room.value = input.value = '';
+  receivedText.value = copyMessage.value = '';
+  joining.value = false;
+  changing.value = true;
+  forgetRoom();
+  roomError.value = reason;
+}
+
 function connect() {
   const url = new URL('/ws', location.href);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -122,6 +207,7 @@ function connect() {
   ws = connection;
   connection.binaryType = 'arraybuffer';
   connection.onmessage = ({ data }) => {
+    if (expiresAt && Date.now() >= expiresAt) expireRoom();
     if (data instanceof ArrayBuffer) { receiveChunk(data); return; }
     const m = JSON.parse(data);
     const pending = offer.value;
@@ -130,17 +216,28 @@ function connect() {
       case 'hello':
         self.value = m.id;
         ready.value = true;
-        if (room.value) join(room.value);
+        if (room.value || pendingRoom) join(room.value || pendingRoom);
         break;
       case 'joined':
+        if (!pendingRoom || m.code !== pendingRoom) {
+          transmit(JSON.stringify({ type: 'leave' }));
+          break;
+        }
+        if (!expiresAt) expiresAt = Date.now() + ROOM_TTL;
         room.value = m.code;
         changing.value = joining.value = false;
+        saveRoom(m.code);
+        scheduleRoomExpiry();
         break;
       case 'join-error':
         joining.value = false;
         roomError.value = m.error;
         changing.value = true;
         room.value = '';
+        pendingRoom = '';
+        expiresAt = 0;
+        window.clearTimeout(roomTimer);
+        forgetRoom();
         break;
       case 'peers':
         if (room.value !== m.code) break;
@@ -188,17 +285,16 @@ function connect() {
 }
 
 function join(code: string) {
+  if (expiresAt && Date.now() >= expiresAt) { expireRoom(); return; }
   roomError.value = '';
   if (!CODE.test(code)) { roomError.value = 'Enter exactly six digits.'; return; }
   joining.value = true;
+  pendingRoom = code;
   transmit(JSON.stringify({ type: 'join', code }));
 }
 
 function changeRoom() {
-  if (room.value && ready.value) transmit(JSON.stringify({ type: 'leave' }));
-  clearRoom('Pairing code changed.');
-  room.value = input.value = roomError.value = '';
-  changing.value = true;
+  leaveRoom();
 }
 
 function receiveSignal(peer: string, data: Signal) {
@@ -393,6 +489,7 @@ function clearSelection() {
 }
 
 function sendTo(peer: string) {
+  if (expiresAt && Date.now() >= expiresAt) { expireRoom(); return; }
   if (busy.value || peer === self.value || !peers.value.includes(peer)) return;
   if (selection.value) {
     sendFiles(peer, selection.value.files, selection.value.folder);
@@ -431,10 +528,16 @@ function cancel() {
   else if (incoming.value) receiveFailed(incoming.value, 'Transfer cancelled.');
 }
 
-onMounted(connect);
+onMounted(() => {
+  restoreRoom();
+  connect();
+  document.addEventListener('visibilitychange', expireRoom);
+});
 onUnmounted(() => {
   stopped = true;
   window.clearTimeout(reconnect);
+  window.clearTimeout(roomTimer);
+  document.removeEventListener('visibilitychange', expireRoom);
   ws?.close();
   clearRoom('Connection closed.');
 });
@@ -460,9 +563,14 @@ onUnmounted(() => {
           <h2 class="text-lg font-semibold">{{ tr('Your pairing room') }}</h2>
           <p v-if="room" class="mt-1 font-mono text-2xl tracking-widest text-cyan-300">{{ room }}</p>
           <p v-else class="muted mt-1">{{ tr('Not paired yet') }}</p>
+          <p v-if="room" class="muted mt-1">{{ tr('Room sessions expire 10 minutes after joining.') }}</p>
         </div>
-        <button v-if="room" class="secondary" @click="changeRoom">{{ tr('Change code') }}</button>
+        <div v-if="room" class="flex flex-wrap gap-2">
+          <button class="secondary" @click="changeRoom">{{ tr('Change code') }}</button>
+          <button class="secondary" @click="leaveRoom()">{{ tr('Leave room') }}</button>
+        </div>
       </div>
+      <p v-if="storageError" class="error" role="alert">{{ tr(storageError) }}</p>
       <p v-if="!ready" class="muted" role="status">{{ tr('Connecting to the server…') }}</p>
       <div v-if="ready && room" class="grid gap-3">
         <div class="flex flex-wrap gap-2">
@@ -547,12 +655,14 @@ onUnmounted(() => {
           <LanguagePicker />
         </div>
         <p class="muted mt-2">{{ tr('Enter the same six-digit code on every device you want to connect.') }}</p>
+        <p class="muted mt-2">{{ tr('Room sessions expire 10 minutes after joining.') }}</p>
         <label class="field mt-5">
           {{ tr('Pairing code') }}
           <input v-model="input" type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="000000"
             class="font-mono text-xl tracking-widest" autofocus>
         </label>
         <p v-if="roomError" class="error mt-2" role="alert">{{ tr(roomError) }}</p>
+        <p v-if="storageError" class="error mt-2" role="alert">{{ tr(storageError) }}</p>
         <button class="primary mt-5 w-full" :disabled="!ready || joining">{{ tr(joining ? 'Joining…' : ready ? 'Join room' : 'Connecting…') }}</button>
         <a href="/admin" class="muted mt-4 block text-center">{{ tr('Administration') }}</a>
       </form>

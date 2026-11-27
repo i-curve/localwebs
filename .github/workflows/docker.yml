@@ -63,6 +63,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -99,10 +101,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          notes="$RUNNER_TEMP/localwebs-commit-notes"
+          {
+            echo '<!-- localwebs:commits:start -->'
+            printf '## Commit history\n\n'
+            git log --format='commit %H%nAuthor: %an%nDate: %aI%n%n%B%n' HEAD | sed 's/^/    /'
+            echo '<!-- localwebs:commits:end -->'
+          } > "$notes"
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '.[].tag_name' > "$RUNNER_TEMP/localwebs-release-tags"
           if grep -Fxq -- "$GITHUB_REF_NAME" "$RUNNER_TEMP/localwebs-release-tags"; then
+            gh release view "$GITHUB_REF_NAME" --json body --jq .body > "$RUNNER_TEMP/localwebs-release-body"
+            awk '
+              $0 == "<!-- localwebs:commits:start -->" { if (inside) exit 1; inside = 1; next }
+              $0 == "<!-- localwebs:commits:end -->" { if (!inside) exit 1; inside = 0; next }
+              !inside && $0 == "" { blanks++; next }
+              !inside { while (blanks > 0) { print ""; blanks-- } print }
+              END { if (inside) exit 1 }
+            ' "$RUNNER_TEMP/localwebs-release-body" > "$RUNNER_TEMP/localwebs-updated-body"
+            printf '\n' >> "$RUNNER_TEMP/localwebs-updated-body"
+            cat "$notes" >> "$RUNNER_TEMP/localwebs-updated-body"
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/localwebs-updated-body"
             gh release upload "$GITHUB_REF_NAME" release/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes
+            gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes --notes-file "$notes"
           fi
