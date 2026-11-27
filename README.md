@@ -13,10 +13,10 @@ Localwebs (Local Web Send) is a browser-based tool for sharing files and clipboa
 
 ## Features
 
-- Connect devices with a six-digit pairing code; transfers start only after the recipient accepts.
+- Connect devices with a six-digit pairing code; files require the recipient's acceptance, while clipboard text is displayed directly.
 - Send files, folders, and text, links, images, or files that the browser allows you to paste.
 - Single files are sent as-is; multiple files and folders are packaged as a ZIP, excluding empty directories. Each transfer is limited to **100 GB**, including ZIP overhead; clipboard text is limited to **1 MiB**.
-- Connect multiple instances to transfer between devices on different nodes.
+- Use clustering to transfer between devices on different nodes.
 - Switch the transfer and admin pages between English and Simplified Chinese.
 
 ## Installation and usage
@@ -40,6 +40,10 @@ Use `docker logs -f localwebs` to view logs. To update, run `docker pull icurve/
 
 Alternatively, run `docker build -t localwebs .` from a cloned repository and replace the image name at the end of the `docker run` command with `localwebs`.
 
+### Download and run
+
+Download the archive for your operating system and architecture from [GitHub Releases](https://github.com/i-curve/localwebs/releases). Extract it and run `./localwebs` from that directory, or `.\localwebs.exe` in PowerShell on Windows. Keep the included `dist` directory alongside the executable.
+
 ### Run from source
 
 Go 1.24 or newer and Node.js 22 are required. After cloning the repository, run:
@@ -50,11 +54,11 @@ npm run build
 go run .
 ```
 
-Open `http://localhost:8080` on the host, or use the host's address from another device. Enter the same six-digit code on both devices, including any leading zeroes, select the content, and click the receiving device. The recipient can then accept and download or copy it. Use a random code, share it only with recipients, and keep both pages open during transfer.
+Open `http://localhost:8080` on the host, or use the host's address from another device. Enter the same six-digit code on both devices, including any leading zeroes, select the content, and click the receiving device. The recipient accepts files before downloading them and can copy clipboard text directly. Use a random code, share it only with recipients, and keep both pages open during transfer.
 
 ## Configuration
 
-Visit `/admin` to manage the account and cluster. The default administrator username is `admin`; if no password is set, admin login is disabled but transfers still work. Set the credentials with `LOCALWEBS_USERNAME` and `LOCALWEBS_PASSWORD`. Docker uses a data volume to retain settings saved in the admin page; when running from source, settings are saved to `config.json` in the project directory by default.
+Visit `/admin` to manage the account and cluster. The default administrator username is `admin`; if no password is set, admin login is disabled but transfers still work. Set the credentials with `LOCALWEBS_USERNAME` and `LOCALWEBS_PASSWORD`. Docker uses a data volume to retain settings saved in the admin page; other installation methods save settings to `config.json` in the current directory by default.
 
 Settings saved in the admin page take precedence over environment variables, which take precedence over the built-in defaults. Set `LOCALWEBS_ADDR` to change the listening address, which defaults to `:8080`. Use HTTPS on untrusted networks.
 

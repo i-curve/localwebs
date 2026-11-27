@@ -54,3 +54,55 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - run: npm ci
+      - run: npm run build
+      - name: Build release archives
+        shell: bash
+        run: |
+          mkdir -p release
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="localwebs-${os}-${arch}"
+            staging="$RUNNER_TEMP/$name"
+            mkdir -p "$staging"
+            cp -R dist "$staging/dist"
+            cp LICENSE "$staging/LICENSE"
+            binary=localwebs
+            if [ "$os" = windows ]; then binary=localwebs.exe; fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+              -trimpath -tags nomsgpack -ldflags="-s -w" -o "$staging/$binary" .
+            if [ "$os" = windows ]; then
+              (cd "$staging" && zip -qr "$GITHUB_WORKSPACE/release/$name.zip" .)
+            else
+              tar -C "$staging" -czf "$GITHUB_WORKSPACE/release/$name.tar.gz" .
+            fi
+          done
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[].tag_name' > "$RUNNER_TEMP/localwebs-release-tags"
+          if grep -Fxq -- "$GITHUB_REF_NAME" "$RUNNER_TEMP/localwebs-release-tags"; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes
+          fi
