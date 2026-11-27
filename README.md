@@ -13,7 +13,7 @@ Localwebs (Local Web Send) is a browser-based tool for sharing files and clipboa
 
 ## Features
 
-- Connect devices with a six-digit pairing code; files require the recipient's acceptance, while clipboard text is displayed directly.
+- Connect devices with a six-digit pairing code; the browser asks before receiving files, the CLI accepts them automatically, and clipboard text is displayed directly.
 - Send files, folders, and text, links, images, or files that the browser allows you to paste.
 - Single files are sent as-is; multiple files and folders are packaged as a ZIP, excluding empty directories. Each transfer is limited to **100 GB**, including ZIP overhead; clipboard text is limited to **1 MiB**.
 - Use clustering to transfer between devices on different nodes.
@@ -43,6 +43,22 @@ Alternatively, run `docker build -t localwebs .` from a cloned repository and re
 ### Download and run
 
 Download the archive for your operating system and architecture from [GitHub Releases](https://github.com/i-curve/localwebs/releases). Extract it and run `./localwebs` from that directory, or `.\localwebs.exe` in PowerShell on Windows. Keep the included `dist` directory alongside the executable.
+
+### Command-line tool
+
+Download the `localwebs-cli` archive for your system and architecture from [GitHub Releases](https://github.com/i-curve/localwebs/releases) (Linux, macOS, Windows, FreeBSD, OpenBSD, and NetBSD). Run `localwebs-cli` for interactive mode, or use commands:
+
+```sh
+export LOCALWEBS_ROOM=123456
+localwebs-cli receive -server https://example.com
+localwebs-cli peers -server https://example.com
+localwebs-cli send -server https://example.com -to DEVICE_ID FILE_OR_FOLDER
+localwebs-cli send -server https://example.com -to DEVICE_ID -clipboard
+```
+
+Use `-clipboard -image` to send a PNG image from the clipboard, or `-stdin` to send text from standard input. Images use a temporary file during sending. Device IDs may be unambiguous prefixes. The CLI automatically saves received files in `downloads` without overwriting existing files; received text is displayed and can be copied with `copy` in interactive mode. Share the pairing code only with trusted devices. System clipboard access may require `wl-paste`/`wl-copy` or `xclip`. Restart the command after a disconnect.
+
+Generate shell completion with `localwebs-cli completion bash`, `zsh`, `fish`, or `powershell` and load the output in your shell. For example, in Bash run `source <(localwebs-cli completion bash)`. Run `localwebs-cli -help` for all options. Pairing codes may be visible in environment variables or command history; protect them and use HTTPS on untrusted networks.
 
 ### Run from source
 

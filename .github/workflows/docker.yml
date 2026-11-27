@@ -96,6 +96,26 @@ jobs:
               tar -C "$staging" -czf "$GITHUB_WORKSPACE/release/$name.tar.gz" .
             fi
           done
+      - name: Build CLI release archives
+        shell: bash
+        run: |
+          for target in $(go tool dist list | grep -E '^(linux|darwin|windows|freebsd|openbsd|netbsd)/'); do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="localwebs-cli-${os}-${arch}"
+            staging="$RUNNER_TEMP/$name"
+            mkdir -p "$staging"
+            cp LICENSE "$staging/LICENSE"
+            binary=localwebs-cli
+            if [ "$os" = windows ]; then binary=localwebs-cli.exe; fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+              -trimpath -ldflags="-s -w" -o "$staging/$binary" ./cmd/localwebs-cli
+            if [ "$os" = windows ]; then
+              (cd "$staging" && zip -qr "$GITHUB_WORKSPACE/release/$name.zip" .)
+            else
+              tar -C "$staging" -czf "$GITHUB_WORKSPACE/release/$name.tar.gz" .
+            fi
+          done
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

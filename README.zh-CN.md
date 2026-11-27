@@ -13,7 +13,7 @@ Localwebs（Local Web Send）是一个基于浏览器的文件和剪贴板分享
 
 ## 功能特性
 
-- 使用 6 位数字配对码连接设备；文件需接收方确认，剪贴板文本直接显示。
+- 使用 6 位数字配对码连接设备；网页端需确认文件，CLI 默认自动接收，剪贴板文本直接显示。
 - 支持发送文件、文件夹，以及浏览器允许粘贴的文本、链接、图片和文件。
 - 单个文件原样发送；多个文件或文件夹打包为 ZIP，空目录不包含在内。每次传输上限为 **100 GB**，包含 ZIP 打包开销；剪贴板文本上限为 **1 MiB**。
 - 支持集群功能，让不同节点上的设备互传。
@@ -43,6 +43,22 @@ docker run -d --name localwebs --restart unless-stopped -p 8080:8080 \
 ### 下载运行
 
 从 [GitHub Releases](https://github.com/i-curve/localwebs/releases) 下载适合系统和架构的压缩包，解压后在该目录运行 `./localwebs`；Windows 用户可在 PowerShell 中运行 `.\localwebs.exe`。请保留压缩包中的 `dist` 目录。
+
+### 命令行工具
+
+从 [GitHub Releases](https://github.com/i-curve/localwebs/releases) 下载对应系统和架构的 `localwebs-cli` 压缩包（Linux、macOS、Windows、FreeBSD、OpenBSD、NetBSD）。运行 `localwebs-cli` 进入交互模式；也可以通过参数运行：
+
+```sh
+export LOCALWEBS_ROOM=123456
+localwebs-cli receive -server https://example.com
+localwebs-cli peers -server https://example.com
+localwebs-cli send -server https://example.com -to 设备ID 文件或目录
+localwebs-cli send -server https://example.com -to 设备ID -clipboard
+```
+
+使用 `-image -clipboard` 发送剪贴板中的 PNG 图片，或使用 `-stdin` 通过标准输入发送文本。图片发送过程中会使用临时文件。设备 ID 可使用无歧义的前缀。CLI 默认自动接收文件到 `downloads`，重名不会覆盖；收到的文本直接显示，在交互模式中可使用 `copy` 复制到系统剪贴板。仅与可信设备使用同一配对码。系统剪贴板可能需要 `wl-paste`/`wl-copy` 或 `xclip`；断线后需要重新运行命令。
+
+通过 `localwebs-cli completion bash`、`zsh`、`fish` 或 `powershell` 生成对应 Shell 的补全脚本，并将其加载到 Shell。例如 Bash 可执行 `source <(localwebs-cli completion bash)`。运行 `localwebs-cli -help` 查看完整参数。配对码可能出现在环境变量或命令历史中，请注意保护；不受信任的网络上使用 HTTPS。
 
 ### 从源码运行
 
