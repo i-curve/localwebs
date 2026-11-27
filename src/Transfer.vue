@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue';
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { BlobReader, ZipWriter } from '@zip.js/zip.js';
 import LanguagePicker from './LanguagePicker.vue';
 import { tr } from './i18n';
@@ -33,14 +33,24 @@ const failure = ref('');
 const progress = ref<number>();
 const fileInput = ref<HTMLInputElement>();
 const folderInput = ref<HTMLInputElement>();
+const offerDialog = ref<HTMLDialogElement>();
 const clipboard = ref('');
 const clipboardFiles = shallowRef<File[]>([]);
 const selection = shallowRef<{ files: File[]; folder: boolean }>();
 const receivedText = ref('');
+const receivedFrom = ref('');
+const copyMessage = ref('');
 const offer = ref<Offer>();
 const incoming = shallowRef<Incoming>();
 const outgoing = shallowRef<Outgoing>();
-const busy = computed(() => Boolean(offer.value || incoming.value || outgoing.value));
+const busy = computed(() => Boolean(offer.value || incoming.value || outgoing.value || receivedText.value));
+const textDialogOpen = computed(() => incoming.value?.content === 'text' || Boolean(receivedText.value));
+watch([offer, textDialogOpen], ([currentOffer, showText]) => {
+  const dialog = offerDialog.value;
+  if (!dialog) return;
+  if ((currentOffer || showText) && !dialog.open) dialog.showModal();
+  else if (!currentOffer && !showText && dialog.open) dialog.close();
+}, { flush: 'post' });
 let ws: WebSocket | undefined;
 let reconnect: number | undefined;
 let offerTimer: number | undefined;
@@ -135,7 +145,10 @@ function connect() {
       case 'peers':
         if (room.value !== m.code) break;
         peers.value = (m.peers as string[]).slice().sort();
-        if (offer.value && !peers.value.includes(offer.value.peer)) clearOffer();
+        if (offer.value && !peers.value.includes(offer.value.peer)) {
+          clearOffer();
+          failure.value = 'The sender disconnected.';
+        }
         if (incoming.value && !peers.value.includes(incoming.value.peer)) receiveFailed(incoming.value, 'The sender disconnected.', false);
         if (outgoing.value && !peers.value.includes(outgoing.value.peer)) stopSending('The recipient disconnected.');
         break;
@@ -200,15 +213,25 @@ function receiveSignal(peer: string, data: Signal) {
     }
     failure.value = '';
     offer.value = { peer, id, name, size, content };
-    offerTimer = window.setTimeout(reject, 55_000);
-    if (!content) transmit(JSON.stringify({ type: 'prepare-download', to: peer, id }));
+    if (content === 'text') {
+      accept();
+      return;
+    }
+    offerTimer = window.setTimeout(() => {
+      reject();
+      failure.value = 'The transfer timed out.';
+    }, 55_000);
+    transmit(JSON.stringify({ type: 'prepare-download', to: peer, id }));
     return;
   }
   const send = outgoing.value;
   const recv = incoming.value;
   if (kind === 'cancel') {
     if (send?.id === id && send.peer === peer) stopSending('The recipient declined or cancelled the transfer.');
-    if (offer.value?.id === id && offer.value.peer === peer) clearOffer();
+    if (offer.value?.id === id && offer.value.peer === peer) {
+      clearOffer();
+      failure.value = 'The sender cancelled the transfer.';
+    }
     if (recv?.id === id && recv.peer === peer) receiveFailed(recv, 'The sender cancelled the transfer.', false);
   } else if (send?.id === id && send.peer === peer && waiter?.kind === kind) {
     waiter.finish();
@@ -238,11 +261,13 @@ function accept() {
   if (!t) return;
   clearOffer();
   receivedText.value = '';
+  copyMessage.value = '';
   const next: Incoming = { ...t, received: 0, chunks: [] };
   incoming.value = next;
   next.timer = receiveTimeout(next);
   status('Receiving {name}…', t);
   if (t.content === 'text') {
+    receivedFrom.value = t.peer;
     progress.value = 0;
     signal(t.peer, { kind: 'accept', id: t.id });
   }
@@ -285,7 +310,7 @@ async function send(peer: string, name: string, size: number | null, source: Sen
   const details = { ...t, name, size, content };
   failure.value = '';
   try {
-    notice.value = { key: 'Waiting for {device} to accept…', peer: t.peer };
+    notice.value = { key: content === 'text' ? 'Sending to {device}…' : 'Waiting for {device} to accept…', peer: t.peer };
     await waitFor('accept', () => signal(t.peer, { kind: 'offer', id: t.id, name, size, content }), 60_000);
     status('Sending {name}…', details);
     let sent = 0;
@@ -368,7 +393,7 @@ function clearSelection() {
 }
 
 function sendTo(peer: string) {
-  if (busy.value || !peers.value.includes(peer)) return;
+  if (busy.value || peer === self.value || !peers.value.includes(peer)) return;
   if (selection.value) {
     sendFiles(peer, selection.value.files, selection.value.folder);
     return;
@@ -386,10 +411,18 @@ async function copyText() {
   try {
     if (!navigator.clipboard) throw new Error('Clipboard unavailable.');
     await navigator.clipboard.writeText(receivedText.value);
-    failure.value = '';
-    status('Text copied.');
+    copyMessage.value = 'Text copied.';
   } catch {
-    failure.value = 'Copy is unavailable here. Select and copy the text manually.';
+    copyMessage.value = 'Copy is unavailable here. Select and copy the text manually.';
+  }
+}
+
+function dismissDialog() {
+  if (offer.value) reject();
+  else if (incoming.value?.content === 'text') receiveFailed(incoming.value, 'Transfer cancelled.');
+  else {
+    receivedText.value = '';
+    copyMessage.value = '';
   }
 }
 
@@ -427,13 +460,11 @@ onUnmounted(() => {
           <h2 class="text-lg font-semibold">{{ tr('Your pairing room') }}</h2>
           <p v-if="room" class="mt-1 font-mono text-2xl tracking-widest text-cyan-300">{{ room }}</p>
           <p v-else class="muted mt-1">{{ tr('Not paired yet') }}</p>
-          <p v-if="self" class="muted mt-1">{{ tr('You are {device}', { device: label(self) }) }}</p>
         </div>
         <button v-if="room" class="secondary" @click="changeRoom">{{ tr('Change code') }}</button>
       </div>
       <p v-if="!ready" class="muted" role="status">{{ tr('Connecting to the server…') }}</p>
-      <p v-else-if="room && !peers.length" class="muted" role="status">{{ tr('Enter this code on another device to connect.') }}</p>
-      <div v-else-if="peers.length" class="grid gap-3">
+      <div v-if="ready && room" class="grid gap-3">
         <div class="flex flex-wrap gap-2">
           <button class="secondary" :disabled="busy" @click="fileInput?.click()">{{ tr('Choose files') }}</button>
           <button class="secondary" :disabled="busy" @click="folderInput?.click()">{{ tr('Choose folder') }}</button>
@@ -450,37 +481,64 @@ onUnmounted(() => {
         <ul v-else-if="selection || clipboardFiles.length" class="muted max-h-36 list-inside list-disc overflow-auto break-all">
           <li v-for="(file, index) in (selection?.files ?? clipboardFiles)" :key="index">{{ file.name }}</li>
         </ul>
-        <div class="grid gap-2 border-t border-slate-800 pt-3">
-          <p class="muted">{{ tr('Choose content, then click the receiving device.') }}</p>
-          <div class="flex flex-wrap gap-2">
-            <button v-for="peer in peers" :key="peer" class="primary"
-              :disabled="busy || (!selection && !clipboard && !clipboardFiles.length)" @click="sendTo(peer)">{{ label(peer) }}</button>
-            <button v-if="selection || clipboard || clipboardFiles.length" class="secondary"
-              :disabled="busy" @click="clearSelection">{{ tr('Clear selection') }}</button>
-          </div>
-        </div>
+        <button v-if="selection || clipboard || clipboardFiles.length" class="secondary justify-self-start"
+          :disabled="busy" @click="clearSelection">{{ tr('Clear selection') }}</button>
       </div>
     </section>
 
-    <section v-if="offer || notice || failure || receivedText" :inert="changing" class="card mt-4 grid gap-3" aria-live="polite">
-      <template v-if="offer">
-        <h2 class="font-semibold">{{ tr(offer.content === 'text' ? '{device} wants to share clipboard text' : '{device} wants to send you a file', { device: label(offer.peer) }) }}</h2>
-        <p class="break-all">{{ offer.content === 'text' ? tr('Clipboard text') : offer.name }} · {{ sizeLabel(offer.size) }}</p>
-        <div class="flex gap-2">
-          <button v-if="offer.content === 'text'" class="primary" @click="accept">{{ tr('Accept') }}</button>
-          <a v-else-if="offer.token" :href="`/download/${offer.token}`" :download="offer.name" class="primary" @click="accept">{{ tr('Accept and download') }}</a>
-          <button class="secondary" @click="reject">{{ tr('Decline') }}</button>
-        </div>
-      </template>
+    <section v-if="room && ready" :inert="changing" class="card mt-4 grid gap-3" aria-labelledby="devices-title">
+      <h2 id="devices-title" class="text-lg font-semibold">{{ tr('Devices in this room') }}</h2>
+      <p class="muted">{{ tr('Choose content, then click the receiving device.') }}</p>
+      <ul class="grid gap-2">
+        <li v-if="self" class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-700 px-4 py-3">
+          <span>{{ label(self) }}</span>
+          <span class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-cyan-300">{{ tr('This device') }}</span>
+        </li>
+        <li v-for="peer in peers" :key="peer">
+          <button class="secondary w-full justify-start text-left"
+            :disabled="busy || (!selection && !clipboard && !clipboardFiles.length)" @click="sendTo(peer)">{{ label(peer) }}</button>
+        </li>
+      </ul>
+      <p v-if="!peers.length" class="muted" role="status">{{ tr('Enter this code on another device to connect.') }}</p>
+    </section>
+
+    <section v-if="notice || failure" :inert="changing" class="card mt-4 grid gap-3" aria-live="polite">
       <p v-if="notice" class="break-all">{{ tr(notice.key, { name: notice.text ? tr('Clipboard text') : notice.name ?? '', device: notice.peer ? label(notice.peer) : '' }) }}</p>
       <p v-if="failure" class="error" role="alert">{{ tr(failure) }}</p>
       <progress v-if="progress !== undefined" :value="progress" max="1" :aria-label="tr('Transfer progress')" />
       <button v-if="outgoing || incoming" class="secondary justify-self-start" @click="cancel">{{ tr('Cancel transfer') }}</button>
-      <template v-if="receivedText">
-        <textarea :value="receivedText" :aria-label="tr('Clipboard text')" rows="4" readonly />
-        <button class="primary justify-self-start" @click="copyText">{{ tr('Copy text') }}</button>
-      </template>
     </section>
+
+    <dialog ref="offerDialog" class="card m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2.5rem)] max-w-md overflow-y-auto text-slate-100 backdrop:bg-slate-950/85 backdrop:backdrop-blur-sm"
+      aria-labelledby="offer-title" :aria-describedby="offer ? 'offer-details' : undefined" @cancel.prevent="dismissDialog" @keydown.esc.prevent.stop="dismissDialog">
+      <template v-if="offer">
+        <h2 id="offer-title" class="text-lg font-semibold">{{ tr('{device} wants to send you a file', { device: label(offer.peer) }) }}</h2>
+        <p id="offer-details" class="mt-3 break-all">{{ offer.name }} · {{ sizeLabel(offer.size) }}</p>
+        <div class="mt-5 flex flex-wrap gap-2">
+          <a v-if="offer.token" :href="`/download/${offer.token}`" :download="offer.name" class="primary" @click="accept">{{ tr('Accept and download') }}</a>
+          <button v-else class="primary" disabled>{{ tr('Preparing download…') }}</button>
+          <button class="secondary" autofocus @click="reject">{{ tr('Decline') }}</button>
+        </div>
+      </template>
+      <template v-else-if="textDialogOpen">
+        <h2 id="offer-title" class="text-lg font-semibold">{{ tr('Clipboard text from {device}', { device: label(receivedFrom) }) }}</h2>
+        <div id="offer-details" class="mt-3 grid gap-3">
+          <template v-if="receivedText">
+            <textarea :value="receivedText" :aria-label="tr('Clipboard text')" rows="6" readonly />
+            <p v-if="copyMessage" :class="copyMessage === 'Text copied.' ? 'muted' : 'error'" role="status">{{ tr(copyMessage) }}</p>
+            <div class="flex flex-wrap gap-2">
+              <button class="primary" @click="copyText">{{ tr('Copy text') }}</button>
+              <button class="secondary" @click="dismissDialog">{{ tr('Close') }}</button>
+            </div>
+          </template>
+          <template v-else>
+            <p class="muted">{{ tr('Receiving {name}…', { name: tr('Clipboard text') }) }}</p>
+            <progress v-if="progress !== undefined" :value="progress" max="1" :aria-label="tr('Transfer progress')" />
+            <button class="secondary justify-self-start" @click="dismissDialog">{{ tr('Cancel transfer') }}</button>
+          </template>
+        </div>
+      </template>
+    </dialog>
 
     <div v-if="changing" class="fixed inset-0 grid place-items-center overflow-y-auto bg-slate-950/85 px-5 py-8 backdrop-blur-sm">
       <form class="card w-full max-w-sm" role="dialog" aria-modal="true" aria-labelledby="pair-title" @submit.prevent="join(input)">
